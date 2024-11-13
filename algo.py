@@ -1,4 +1,4 @@
-OPENSLIDE_PATH = r"C:\Users\Jimmy\anaconda3\Library\openslide-win64-20231011\bin"
+#OPENSLIDE_PATH = r"C:\Users\Jimmy\anaconda3\Library\openslide-win64-20231011\bin"
 import os
 os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40))
 if hasattr(os, 'add_dll_directory'):
@@ -9,7 +9,7 @@ else:
     import openslide
 import cv2
 import matplotlib
-matplotlib.use('TkAgg')
+#matplotlib.use('TkAgg')
 from matplotlib import pyplot as plt
 import numpy as np
 import math
@@ -271,11 +271,11 @@ def main_processing(labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, st
 
 if __name__ == "__main__":
     level = 0
-    json_root_path = f'liver_score/f{level}_bbox_json'
-    wsi_root_path = f'liver_score/f{level}'
-    xml_root_path = f'liver_score/f{level}_liver_xml'
-    tissue_root_xml_path = f'liver_score/f{level}_tissue_xml/biopsy'
-    save_result_vis_path = f'liver_score/f{level}_result'
+    json_root_path = f'/work/u3516703/liver_score/f{level}_bbox_json'
+    wsi_root_path = f'/work/u3516703/liver_score/f{level}'
+    xml_root_path = f'/work/u3516703/liver_score/f{level}_liver_xml'
+    tissue_root_xml_path = f'/work/u3516703/liver_score/f{level}_tissue_xml/biopsy'
+    save_result_vis_path = f'/work/u3516703/liver_score/f{level}_result'
 
     for file in os.listdir(wsi_root_path):
         if '15-00176-Masson.mrxs' in file:
@@ -311,7 +311,7 @@ if __name__ == "__main__":
             save_path = os.path.join(save_result_vis_path,file.replace('.mrxs','.jpg'))
             cv2.imwrite(save_path, final_image)
             print(area_dict)
-            save_path = os.path.join(save_result_vis_path,file.replace('.jpg','.json'))
+            save_path = os.path.join(save_result_vis_path,file.replace('.mrxs','.json'))
             with open(save_path, 'w', encoding='utf-8') as file:
                 json.dump(area_dict, file, ensure_ascii=False, indent=4)
             end_time = time.time() 
