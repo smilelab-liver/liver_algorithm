@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
+from skimage.morphology import skeletonize
 
 check_bridging = False
 
@@ -467,28 +468,90 @@ def is_component_in_duct_bbox(component_points, bboxes):
             overlap_bbox.append(idx)
     
     return overlap_bbox
+def generate_tissue_skeleton(tissue_mask):
+    """
+    產生穿刺的骨架 => 用來檢查是否有 Bridging
+    """
+    tissue_mask = (tissue_mask // 255).astype(np.uint8) 
+    tissue_mask = cv2.dilate(tissue_mask, np.ones((31, 31), np.uint8), iterations=1)
+    skeleton0 = skeletonize(tissue_mask,method='lee')
+    skeleton = (skeleton0.astype(np.uint8) * 255)
+    return skeleton
+def check_bridge_when_no_vein(mask):
+    """
+    檢查當沒血管的情況下是否有 Bridging
+    """
+    global tissue_skeleton
+    bridge_mask = cv2.bitwise_and(tissue_skeleton, mask)
+    if cv2.countNonZero(bridge_mask) > 0:
+        return True
+    else:
+        return False
+def removeedge(mask, area_threshold=30000):
+    """
+    移除纖維極值的部分
+    """
+    mask = mask.astype(np.uint8)
+    # mask_origin = mask.copy()
+
+    # kernel = np.ones((3, 3), np.uint8)
+    # mask = cv2.erode(mask, kernel, iterations=1)
+
+    # Ensure that the mask is binary (0 or 255)
+    _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+    # Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Initialize a clean mask
+    clean_mask = np.zeros_like(mask)
+    for contour in contours:
+        # Calculate the contour area using cv2.contourArea
+        contour_area = cv2.contourArea(contour)
+        
+        # Keep contours within the acceptable range
+        if contour_area <= area_threshold:
+            # Draw the valid contour on the clean mask
+            cv2.drawContours(clean_mask, [contour], -1, 255, thickness=cv2.FILLED)
+
+    # # dilate
+    # kernel = np.ones((5, 5), np.uint8)
+    # clean_mask = cv2.dilate(clean_mask, kernel, iterations=1)
+    # # bitwise
+    # clean_mask = cv2.bitwise_and(clean_mask, mask_origin)
+    return clean_mask
+def draw_skeleton(wsi_img):
+    global tissue_skeleton
+    wsi_img[tissue_skeleton == 255] = [0, 255, 255]
+    return wsi_img
 def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, bboxes, wsi_img, stats, area_dict, duct_portal_mask):
-    area = stats[component_label, cv2.CC_STAT_AREA]
-    if area < 200:
-        return
-
-    component_mask = np.zeros_like(fibrosis_dilated)
-    component_mask[labels == component_label] = 255
-    component_points = np.argwhere(component_mask > 0).tolist()
-    overlap_bboxex = is_component_in_bbox(component_points, bboxes)
-    overlap_duct_bboxes = is_component_in_duct_bbox(component_points, bboxes)
-    real_component_mask = np.zeros_like(fibrosis_dilated)
-    real_component_mask = cv2.bitwise_and(fibrosis_mask, component_mask)
-    area = cv2.countNonZero(real_component_mask)
-
     colors = [(255, 0, 0), (0, 0, 255), (0, 255, 0)]
     bbox_colors = [(255, 0, 0), (255, 255, 0), (127, 0, 255)]
+
+    # 產生目前 Component 的 mask     
+    component_mask = np.zeros_like(fibrosis_dilated)
+    component_mask[labels == component_label] = 255 # 這是有 Dialated 的 mask
+    component_points = np.argwhere(component_mask > 0).tolist()
+    real_component_mask = np.zeros_like(fibrosis_dilated)
+    real_component_mask = cv2.bitwise_and(fibrosis_mask, component_mask) # 這是一般的 mask
+    area = cv2.countNonZero(real_component_mask)
+    # 面積太小 == 太破碎，直接 assign 成 zone2
+    if area < 200:
+        with lock:
+            wsi_img[real_component_mask > 0] = [255, 0, 0] # 藍色
+            if area_dict.get('zone2') is None:
+                area_dict['zone2'] = 0
+            area_dict['zone2'] += area
+        return
+    
+    # 確認是否有重疊血管或膽管
+    overlap_bboxex = is_component_in_bbox(component_points, bboxes)
+    overlap_duct_bboxes = is_component_in_duct_bbox(component_points, bboxes)
 
     with lock:
         tmp_boxes = []
         for overlap_bbox in overlap_bboxex:
             tmp_boxes.append(bboxes[overlap_bbox])
         # 如果 BBOX 重疊就不用特別作 bridging
+        # TODO: BBOX 距離太近的情況，要合併
         tmp_boxes = check_boxes(tmp_boxes)
         # 計算面積 & 視覺化纖維
         if len(tmp_boxes) == 1:
@@ -505,15 +568,23 @@ def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, b
             wsi_img[real_component_mask > 0] = [0, 255, 255]  # 黄色
         else:
             # 沒有血管的情況
-            if len(overlap_duct_bboxes) > 0:
+            if len(overlap_duct_bboxes) > 0 and not check_bridge_when_no_vein(component_mask):
                 # TODO: 如果有膽管要判定成 Portal => 新增一個 portal#num 給他儲存結果
                 duct_portal_mask[real_component_mask > 0] = 255
             else:
-                if area < 1000:
+                if area >= 1000 and check_bridge_when_no_vein(component_mask):
+                    wsi_img[real_component_mask > 0] = [255, 255, 0] # 青色
+                    if area_dict.get('birdge') is None:
+                        area_dict['birdge'] = 0
+                    if area_dict.get('birdge_num') is None:
+                        area_dict['birdge_num'] = 0
+                    area_dict['birdge'] += area
+                    area_dict['birdge_num'] += 1
+                else:
+                    wsi_img[real_component_mask > 0] = [255, 0, 0] # 藍色
                     if area_dict.get('zone2') is None:
                         area_dict['zone2'] = 0
                     area_dict['zone2'] += area
-                wsi_img[real_component_mask > 0] = [255, 0, 0] # 藍色
         # 畫血管 BBox
         for overlap_bbox in overlap_bboxex:
             x1, y1, x2, y2, class_idx, bbox_id = bboxes[overlap_bbox]
@@ -536,6 +607,7 @@ def main_processing(labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, st
     return wsi_img,duct_portal_mask
 
 if __name__ == "__main__":
+    global tissue_skeleton
     if len(sys.argv) > 1:
         try:
             level = int(sys.argv[1])
@@ -552,17 +624,22 @@ if __name__ == "__main__":
 
     for file in os.listdir(wsi_root_path):
         if '.mrxs' in file:
+            start_time = time.time()
             wsi_path = os.path.join(wsi_root_path,file)
             json_path = os.path.join(json_root_path,file.replace('.mrxs','.geojson'))
             xml_path = os.path.join(xml_root_path,file.replace('.mrxs','.xml'))
             tissue_xml_path = os.path.join(tissue_root_xml_path,file.replace('.mrxs','.xml'))
 
             bbox_mask,bboxes,uuid = generate_bbox_mask(wsi_path,json_path,level=4)
-            fibrosis_mask = generate_fibrosis_mask(wsi_path,xml_path,level=4)
+            fibrosis_mask = generate_fibrosis_mask(wsi_path,xml_path,level=4)    
             tissue_mask = generate_fibrosis_mask(wsi_path,tissue_xml_path,level=4)
+            # TODO : 此處穿刺的骨架可能會有問題
+            tissue_mask = cv2.dilate(tissue_mask, np.ones((15, 15), np.uint8), iterations=1)
+            tissue_skeleton = generate_tissue_skeleton(tissue_mask)
 
             # 處理掉上方切片組織
             fibrosis_mask = cv2.bitwise_and(fibrosis_mask,tissue_mask)
+            fibrosis_mask = removeedge(fibrosis_mask)
 
             wsi_img = generate_wsi_img(wsi_path,level=4)
             duct_portal_mask = np.zeros_like(fibrosis_mask)
@@ -571,7 +648,6 @@ if __name__ == "__main__":
 
             num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(fibrosis_dilated)
 
-            start_time = time.time()
             lock = threading.Lock()
 
             area_dict = {}
@@ -580,6 +656,7 @@ if __name__ == "__main__":
             if not os.path.exists(save_result_vis_path):
                 os.makedirs(save_result_vis_path)
             save_path = os.path.join(save_result_vis_path,file.replace('.mrxs','.jpg'))
+            final_image = draw_skeleton(final_image)
             cv2.imwrite(save_path, final_image)
             print(area_dict)
             save_path = os.path.join(save_result_vis_path,file.replace('.mrxs','.json'))
