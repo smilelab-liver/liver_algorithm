@@ -1,7 +1,3 @@
-import cv2
-import numpy as np
-from plantcv import plantcv as pcv
-
 #                        ____________
 #                       |            |
 #                       |            |
@@ -34,6 +30,9 @@ from plantcv import plantcv as pcv
 #  .............................................  
 #                  此檔案為 Specific Utility
 
+import cv2
+import numpy as np
+from plantcv import plantcv as pcv
 
 ###################################################################
 # Generate Skeleton

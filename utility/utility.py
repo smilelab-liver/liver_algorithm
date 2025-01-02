@@ -1,12 +1,3 @@
-import os
-os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40))
-import cv2
-# import matplotlib
-# matplotlib.use('TKAgg')
-# from matplotlib import pyplot as plt
-import numpy as np
-import json
-
 #  .............................................  
 #                     _ooOoo_  
 #                    o8888888o  
@@ -30,6 +21,14 @@ import json
 #           佛祖保佑             永无BUG 
 #           此檔案為 General Utility
 
+import os
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40))
+import cv2
+# import matplotlib
+# matplotlib.use('TKAgg')
+# from matplotlib import pyplot as plt
+import numpy as np
+import json
 
 ###################################################################
 # 讀取標註檔案
