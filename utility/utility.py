@@ -34,7 +34,7 @@ import xml.etree.cElementTree as ET
 ###################################################################
 def read_xml_annotations(xml_path, wsi_path = None):
     """
-    讀取 ASAP json
+    讀取 ASAP xml
     @param xml_path: 標註檔案路徑
     @param wsi_path: WSI 檔案路徑 
     (因為 mrxs 使用 alovas 標註時會有坐標的偏移量，所以要扣除)
