@@ -24,11 +24,84 @@
 import os
 os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,40))
 import cv2
-# import matplotlib
-# matplotlib.use('TKAgg')
-# from matplotlib import pyplot as plt
 import numpy as np
 import json
+import openslide
+import xml.etree.cElementTree as ET
+
+###################################################################
+# 轉換標註檔案 (ASAP XML -> ALOVAS JSON)
+###################################################################
+def read_xml_annotations(xml_path, wsi_path = None):
+    """
+    讀取 ASAP json
+    @param xml_path: 標註檔案路徑
+    @param wsi_path: WSI 檔案路徑 
+    (因為 mrxs 使用 alovas 標註時會有坐標的偏移量，所以要扣除)
+    """
+    if wsi_path is not None:
+        wsi_data = openslide.OpenSlide(wsi_path)
+        bounds_x = wsi_data.properties["openslide.bounds-x"]
+        bounds_y = wsi_data.properties["openslide.bounds-y"]
+
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    annotations = []
+
+    for annotation in root.findall(".//Annotation"):
+        annotation_name = annotation.get('Name')
+        if annotation.get('PartOfGroup') == '0':
+            annotation_partofgroup = 'fibrosis'
+        else:
+            annotation_partofgroup = 'lumen'
+        annotation_type = annotation.get('Type')
+        annotation_coordinates = []
+
+        coordinates = annotation.find('Coordinates')
+        if coordinates is not None:
+            for coordinate in coordinates.findall('Coordinate'):
+                x = float(coordinate.get('X'))
+                y = float(coordinate.get('Y'))
+                if wsi_path is not None:
+                    x -= float(bounds_x)
+                    y -= float(bounds_y)
+                annotation_coordinates.append((x, y))
+
+        annotations.append({
+            'name': annotation_name,
+            'partofgroup': annotation_partofgroup,
+            'type': annotation_type,
+            'coordinates': annotation_coordinates
+        })
+    return annotations
+
+def xml2json(xml_path, wsi_path = None, ver='beta'):
+    """
+    轉換 ASAP xml -> alovas json
+    """
+    annotations = read_xml_annotations(xml_path, wsi_path)
+    contour_json_file = dict(annotation=[],
+                           information={
+                            "version": ver
+                            })
+    
+    for annotation in annotations:
+        contour_alovas = [{ 'x':int(float(p[0])-46336), 'y':int(float(p[1])-45824)} for p in annotation['coordinates']]
+        contour_annotation = dict(
+            name="portal",
+            caption= "fibrosis",
+            type= "polygon",
+            partOfGroup= 'fibrosis',
+            coordinates=contour_alovas,
+        )
+        contour_json_file['annotation'].append(contour_annotation)
+        # contour_json_file["history"][0]['annotation'].append(contour_annotation)
+    return contour_json_file
+
+def save_json_file(json_file, json_path):
+    with open(json_path, 'w') as f:
+        json.dump(json_file, f, indent=4)
 
 ###################################################################
 # 讀取標註檔案
