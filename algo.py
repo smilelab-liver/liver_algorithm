@@ -18,201 +18,7 @@ import json
 
 from utility.utility import *
 from utility.post_process import *
-
-def cutBridge(mask, real_mask, wsi_img, bboxes, area_dict):
-    colors = [(255, 0, 0), (0, 0, 255), (0, 255, 0)]
-    # 所有 BBoxes 的點
-    all_bbox_points = set()
-    for x1, y1, x2, y2, class_idx, bbox_id in bboxes:
-        bbox_points_set = {(y, x) for y in range(y1, y2 + 1) for x in range(x1, x2 + 1)}
-        all_bbox_points.update(bbox_points_set)
-
-    # 每個 BBOX 的點
-    bbox_points_sets = []
-    for x1, y1, x2, y2, class_idx, bbox_id in bboxes:
-        bbox_points_set = {(y, x) for y in range(y1-1, y2 + 2) for x in range(x1-1, x2 + 2)}
-        bbox_points_sets.append(bbox_points_set)
-
-    # 找到與所有 BBoxes 都無交集的點
-    component_points = np.argwhere(mask > 0).tolist()
-    component_points = {tuple(point) for point in component_points}
-    non_overlapping_points = component_points - all_bbox_points
-    output_mask = np.zeros_like(mask, dtype=np.uint8)
-    for y, x in non_overlapping_points:
-        output_mask[y, x] = 255 
-
-    # 尋找 Bridging 的 Component
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(output_mask)
-    bridging_components = []  # 儲存 Component 中與 BBoxes 都有交集的 Component
-    for label in range(1, num_labels):
-        component_mask = np.zeros_like(output_mask)
-        component_mask[labels == label] = 255
-        component_points = np.argwhere(component_mask > 0).tolist()
-        component_points = {tuple(point) for point in component_points}
-
-        # 檢查是否與任意 BBox 都有交集
-        connected_to_bboxes = [
-            any(point in bbox_points_set for point in component_points)
-            for bbox_points_set in bbox_points_sets
-        ]
-
-        if sum(connected_to_bboxes) == 2:
-            bridging_components.append(label)
-    bridging_mask = np.zeros_like(mask, dtype=np.uint8)
-    for label in bridging_components:
-        bridging_mask[labels == label] = 255 
-
-    # 切割 Bridging
-    x, y, w, h = cv2.boundingRect(bridging_mask)
-    upper_or_left_mask = np.zeros_like(mask, dtype=np.uint8)
-    lower_or_right_mask = np.zeros_like(mask, dtype=np.uint8)
-    if h >= w:  
-        mid_y = y + h // 2
-        upper_or_left_mask[y:mid_y, x:x + w] = bridging_mask[y:mid_y, x:x + w]
-        lower_or_right_mask[mid_y:y + h, x:x + w] = bridging_mask[mid_y:y + h, x:x + w]
-    else:  
-        mid_x = x + w // 2
-        upper_or_left_mask[y:y + h, x:mid_x] = bridging_mask[y:y + h, x:mid_x]
-        lower_or_right_mask[y:y + h, mid_x:x + w] = bridging_mask[y:y + h, mid_x:x + w]
-
-    # 分配Bridging
-    upper_or_left_mask_points = np.argwhere(upper_or_left_mask > 0).tolist()
-    upper_or_left_mask_points = {tuple(point) for point in upper_or_left_mask_points}
-    lower_or_right_mask_points = np.argwhere(lower_or_right_mask > 0).tolist()
-    lower_or_right_mask_points = {tuple(point) for point in lower_or_right_mask_points}
-    for x1, y1, x2, y2, class_idx, bbox_id in bboxes:
-        bbox_points_set = {(y, x) for y in range(y1-1, y2 + 2) for x in range(x1-1, x2 + 2)}
-        if any(point in bbox_points_set for point in upper_or_left_mask_points):
-            upper_or_left_mask = cv2.bitwise_and(upper_or_left_mask, real_mask)
-            # wsi_img[upper_or_left_mask > 0] = colors[class_idx]
-            wsi_img[upper_or_left_mask > 0] = [255,255,0]
-            area = cv2.countNonZero(component_mask)
-            if area_dict.get(bbox_id) is None:
-                area_dict[bbox_id] = 0
-            area_dict[bbox_id] += area
-            continue
-        if any(point in bbox_points_set for point in lower_or_right_mask_points):
-            lower_or_right_mask = cv2.bitwise_and(lower_or_right_mask, real_mask)
-            # wsi_img[lower_or_right_mask > 0] = colors[class_idx]
-            wsi_img[lower_or_right_mask > 0] = [0,255,255]
-            area = cv2.countNonZero(component_mask)
-            if area_dict.get(bbox_id) is None:
-                area_dict[bbox_id] = 0
-            area_dict[bbox_id] += area
-            continue
-
-    # 分配非 Bridging
-    non_bridging_mask= cv2.subtract(mask,bridging_mask)
-
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(non_bridging_mask)
-    for label in range(1, num_labels):
-        component_mask = np.zeros_like(output_mask)
-        component_mask[labels == label] = 255
-        component_points = np.argwhere(component_mask > 0).tolist()
-        component_points = {tuple(point) for point in component_points}
-        for x1, y1, x2, y2, class_idx, bbox_id in bboxes:
-            bbox_points_set = {(y, x) for y in range(y1-1, y2 + 2) for x in range(x1-1, x2 + 2)}
-            if any(point in bbox_points_set for point in component_points):
-                component_mask = cv2.bitwise_and(component_mask, real_mask)
-                wsi_img[component_mask>0] = colors[class_idx]
-                area = cv2.countNonZero(component_mask)
-                if area_dict.get(bbox_id) is None:
-                    area_dict[bbox_id] = 0
-                area_dict[bbox_id] += area
-                break
-def cutBridge_v2(mask, real_mask, wsi_img, bboxes, area_dict):
-    def split_mask_by_bboxes(mask, bboxes):
-        """
-        根據兩個 bounding box 的位置切割 mask，並返回上下或左右的 mask。
-        """
-        x1, y1, x2, y2, _, _ = bboxes[0]
-        x3, y3, x4, y4, _, _ = bboxes[1]
-
-        x_arr = [x1, x2, x3, x4]
-        y_arr = [y1, y2, y3, y4]
-        x_arr.sort()
-        y_arr.sort()
-
-        mid_x = (x_arr[1] + x_arr[2]) // 2
-        mid_y = (y_arr[1] + y_arr[2]) // 2
-
-        x, y, w, h = cv2.boundingRect(mask)
-
-        upper_or_left_mask = np.zeros_like(mask, dtype=np.uint8)
-        lower_or_right_mask = np.zeros_like(mask, dtype=np.uint8)
-
-        # 判斷切割方向
-        if h >= w:  # 垂直方向切割
-            upper_or_left_mask[y:mid_y, x:x + w] = mask[y:mid_y, x:x + w]
-            lower_or_right_mask[mid_y:y + h, x:x + w] = mask[mid_y:y + h, x:x + w]
-        else:  # 水平方向切割
-            upper_or_left_mask[y:y + h, x:mid_x] = mask[y:y + h, x:mid_x]
-            lower_or_right_mask[y:y + h, mid_x:x + w] = mask[y:y + h, mid_x:x + w]
-
-        return upper_or_left_mask, lower_or_right_mask
-    def refine_mask(mask):
-        """
-        保留 mask 中的最大連通元件，將較小的連通元件移動到另一個 mask。
-        """
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-        areas = stats[:, cv2.CC_STAT_AREA]
-
-        if len(areas) <= 1:  # 沒有任何有效的連通元件
-            print("Warning: No valid components in the mask.")
-            refined_mask = mask.copy()
-            removed_mask = np.zeros_like(mask)
-            return refined_mask, removed_mask
-
-        largest_component_idx = 1 + np.argmax(areas[1:])
-        max_area = areas[largest_component_idx]
-
-        # 初始化另一個 mask 用於保存移除的元件
-        refined_mask = mask.copy()
-        removed_mask = np.zeros_like(mask)
-        for label in range(1, num_labels):
-            if areas[label] < max_area:
-                component_mask = np.zeros_like(mask)
-                component_mask[labels == label] = 255
-                removed_mask = cv2.add(removed_mask, component_mask)
-                refined_mask = cv2.subtract(refined_mask, component_mask)
-        return refined_mask, removed_mask
-    def assign_bridging(mask, real_mask, bboxes, wsi_img, area_dict, color_map):
-        """
-        根據 bboxes 的位置分配 Bridging 區域，更新影像與面積。
-        """
-        mask_points = set(map(tuple, np.argwhere(mask > 0)))
-        for x1, y1, x2, y2, class_idx, bbox_id in bboxes:
-            bbox_points_set = {(y, x) for y in range(y1 - 1, y2 + 2) for x in range(x1 - 1, x2 + 2)}
-            if mask_points & bbox_points_set:  # 是否有交集
-                color = color_map.get(class_idx+3, [255, 255, 255]) 
-                mask = cv2.bitwise_and(mask, real_mask)
-                wsi_img[mask > 0] = color
-                area = cv2.countNonZero(mask)
-                area_dict[bbox_id] = area_dict.get(bbox_id, 0) + area
-                break
-
-    upper_or_left_mask, lower_or_right_mask = split_mask_by_bboxes(mask, bboxes)
-    lower_or_right_mask, moved_to_upper = refine_mask(lower_or_right_mask)
-    upper_or_left_mask = cv2.add(upper_or_left_mask, moved_to_upper)
-    upper_or_left_mask, moved_to_lower = refine_mask(upper_or_left_mask)
-    lower_or_right_mask = cv2.add(lower_or_right_mask, moved_to_lower)
-
-    # color_map = {
-    #     0: [255, 255, 255],
-    #     1: [0, 0, 255],
-    #     2: [0, 255, 0],
-    # }
-    color_map = {
-        0: [255, 255, 255],  # 白色
-        1: [0, 0, 255],      # 红色
-        2: [0, 255, 0],      # 绿色
-        3: [255, 0, 0],      # 蓝色
-        4: [0, 255, 255],    # 黄色
-        5: [255, 0, 255],    # 品红
-        6: [255, 255, 0],    # 青色
-    }
-    assign_bridging(lower_or_right_mask, real_mask, bboxes, wsi_img, area_dict, color_map)
-    assign_bridging(upper_or_left_mask, real_mask, bboxes, wsi_img, area_dict, color_map)
+from utility.bridge import *
 
 def distinguish_duct_portal(mask,wsi_img, portal_num, area_dict):
     """
@@ -393,11 +199,13 @@ def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, b
             if area_dict.get(bbox_id) is None:
                 area_dict[bbox_id] = 0
             area_dict[bbox_id] += area
-        elif len(overlap_bboxex) == 2:
-            # TODO: 兩個血管的情況 => Briding
-            cutBridge_v2(component_mask, real_component_mask, wsi_img, overlap_bboxex, area_dict)
-        elif len(overlap_bboxex) > 2:
-            wsi_img[real_component_mask > 0] = [0, 255, 255]  # 黄色
+        elif len(overlap_bboxex) >= 2:
+            bridge_mask = cut_bridge(component_mask, overlap_bboxex)
+            for class_idx in np.unique(bridge_mask):
+                if class_idx == 0:
+                    continue
+                wsi_img[(bridge_mask == class_idx) & (real_component_mask > 0)] = colors[(class_idx - 1)]
+
         else:
             # 判定 Bridging
             if area >= 1000 and check_bridge_when_no_vein(component_mask):
@@ -460,7 +268,6 @@ if __name__ == "__main__":
             fibrosis_mask = generate_fibrosis_mask(wsi_data, xml_path,level=wsi_level)
             tissue_mask = generate_tissue_mask(wsi_data, tissue_xml_path,level=wsi_level)
             wsi_img = generate_wsi_img(wsi_data, level=wsi_level)
-
             # 過濾 bbox (只留下穿刺區域的 bbox)
             assert len(bboxes) > 0, "bbox mask is empty"
             bboxes = is_component_in_bbox(np.argwhere(tissue_mask > 0).tolist(), bboxes, class_filter=None)
