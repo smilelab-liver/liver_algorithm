@@ -131,7 +131,7 @@ def is_component_in_bbox(component_points, bboxes, class_filter=None):
     for idx, (x1, y1, x2, y2, class_idx, bbox_id) in enumerate(bboxes):
         if class_filter is not None and class_idx not in class_filter:
             continue
-        bbox_points_set = {(y, x) for y in range(y1, y2 + 1) for x in range(x1, x2 + 1)}
+        bbox_points_set = {(y, x) for y in range(y1-2, y2 + 2) for x in range(x1-2, x2 + 2)}
         if any(point in bbox_points_set for point in component_points):
             overlap_bbox.append(bboxes[idx])
     return overlap_bbox
