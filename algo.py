@@ -204,7 +204,7 @@ def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, b
             for class_idx in np.unique(bridge_mask):
                 if class_idx == 0:
                     continue
-                wsi_img[(bridge_mask == class_idx) & (real_component_mask > 0)] = colors[(class_idx - 1)]
+                wsi_img[(bridge_mask == class_idx) & (real_component_mask > 0)] = colors[(class_idx - 1)%3]
 
         else:
             # 判定 Bridging
@@ -223,7 +223,8 @@ def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, b
                 area_dict['zone2'] += area
 
 def main_processing(labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, num_labels, area_dict):
-    with ThreadPoolExecutor() as executor:
+    # 如果會 out of memory max_workers=往下降
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
             executor.submit(process_component, label, labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, area_dict)
             for label in range(1, num_labels)
