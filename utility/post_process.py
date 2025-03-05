@@ -157,24 +157,68 @@ def compute_iou(box1, box2):
     union_area = area1 + area2 - inter_area
     return inter_area / union_area if union_area > 0 else 0
 
-def check_boxes(bboxes):
+def box_distance(box1, box2):
+    """計算兩個邊界框之間的最短距離"""
+    left = box2[2] < box1[0]
+    right = box1[2] < box2[0]
+    above = box2[3] < box1[1]
+    below = box1[3] < box2[1]
+    
+    if left:
+        if above:
+            return np.hypot(box1[0] - box2[2], box1[1] - box2[3])
+        elif below:
+            return np.hypot(box1[0] - box2[2], box1[3] - box2[1])
+        else:
+            return box1[0] - box2[2]
+    elif right:
+        if above:
+            return np.hypot(box1[2] - box2[0], box1[1] - box2[3])
+        elif below:
+            return np.hypot(box1[2] - box2[0], box1[3] - box2[1])
+        else:
+            return box2[0] - box1[2]
+    elif above:
+        return box1[1] - box2[3]
+    elif below:
+        return box2[1] - box1[3]
+    else:
+        return 0
+def merge_boxes(box1, box2):
+    """合併兩個邊界框，取最小的 x1, y1 和最大的 x2, y2"""
+    x1 = min(box1[0], box2[0])
+    y1 = min(box1[1], box2[1])
+    x2 = max(box1[2], box2[2])
+    y2 = max(box1[3], box2[3])
+    class_idx = box1[4]  # 假設類別不變
+    bbox_id = min(box1[5], box2[5])  # 保留較小的 id
+    return (x1, y1, x2, y2, class_idx, bbox_id)
+def check_boxes(bboxes, merge_threshold=100):
     """
-    檢查邊界框是否重疊，若重疊則保留面積大的框。
+    檢查邊界框是否重疊或距離很近，重疊則保留較大框，距離小於 merge_threshold 則合併。
     bboxes: List of bounding boxes [(x1, y1, x2, y2, class_idx, bbox_id), ...]
+    merge_threshold: 兩個框的距離若小於此閾值，則合併
     """
     bboxes = sorted(bboxes, key=lambda box: compute_area(box[0], box[1], box[2], box[3]), reverse=True)
     
     keep = []  
     removed = set()  
+    
     for i, box1 in enumerate(bboxes):
         if i in removed:
             continue
-        keep.append(box1)
+        
         for j, box2 in enumerate(bboxes[i + 1:], start=i + 1):
             if j in removed:
                 continue
-            # 計算 IoU
+            
             iou = compute_iou(box1[:4], box2[:4])
-            if iou > 0: 
-                removed.add(j) 
+            dist = box_distance(box1[:4], box2[:4])
+            
+            if iou > 0 or dist < merge_threshold:
+                box1 = merge_boxes(box1, box2)
+                removed.add(j)
+                
+        keep.append(box1)
+    
     return keep
