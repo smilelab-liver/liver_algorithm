@@ -26,11 +26,11 @@ def fillhole2(mask):
 
 
 
-def generate_Bboxmask(mask, bboxes):
+def generate_Bboxmask(mask, bboxes, shift=2):
     # List of bounding boxes [(x1, y1, x2, y2, class_idx, bbox_id), ...] (至少 2 bboxes)
     bbox_mask = np.zeros_like(mask)
     for (x1, y1, x2, y2, class_idx, bbox_id) in bboxes:
-        cv2.rectangle(bbox_mask, (x1, y1), (x2, y2), 255, -1)
+        cv2.rectangle(bbox_mask, (x1-shift, y1-shift), (x2+shift, y2+shift), 255, -1)
     return bbox_mask
 
 def find_circles_intersection(mask, bboxes):
@@ -66,6 +66,7 @@ def find_circles_intersection(mask, bboxes):
 def find_smallest_bbox(mask):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     res = []
+    bridge_boxes = []
     for cnt in contours:
         rect = cv2.minAreaRect(cnt)  
         box = cv2.boxPoints(rect)
@@ -75,11 +76,15 @@ def find_smallest_bbox(mask):
             w, h = h, w
             angle += 90
             box = np.roll(box, shift=-1, axis=0)
-
         mid_point1 = ((box[1] + box[2]) // 2).tolist()
         mid_point2 = ((box[0] + box[3]) // 2).tolist()
+        
+        length = max(w, h)
+        thickness = min(w, h)
+        bridge_boxes.append((box, length, thickness))
+
         res.append((mid_point1, mid_point2))
-    return res
+    return res, bridge_boxes
 
 def split_by_line(mask, mid_point1, mid_point2):
     x1, y1 = mid_point1
@@ -144,8 +149,8 @@ def cut_bridge(mask, bboxes):
     @bboxes: List of bounding boxes [(x1, y1, x2, y2, class_idx, bbox_id), ...] (至少 2 bboxes)
     @return : bridge mask 值為 1, 2, 3, ... 若兩個 bbox 值 mask 就為 1, 2 分別代表兩個區域
     """
-    vis = mask.copy()
-    vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
+    # vis = mask.copy()
+    # vis = cv2.cvtColor(vis, cv2.COLOR_GRAY2BGR)
 
     # 1. fill inner hole
     mask = fillhole2(mask)
@@ -153,7 +158,6 @@ def cut_bridge(mask, bboxes):
     df = generate_distance_transform(mask)
     skeleton = pcv.morphology.skeletonize(df)
     pruned_skeleton, _, _ = pcv.morphology.prune(skel_img=skeleton, size=200)
-    vis[pruned_skeleton > 0] = [0, 255, 0]
     # 3. Find the intersection of two circle & Use intersection to filter skeleton
     intersection_mask = find_circles_intersection(mask, bboxes)
     pruned_skeleton = cv2.bitwise_and(intersection_mask, pruned_skeleton)
@@ -163,15 +167,22 @@ def cut_bridge(mask, bboxes):
     pruned_skeleton[bbox_mask > 0] = 0
     # 5. find the bridge skeleton (overlap with 2 bboxes)
     num_labels, labels, _, _ = cv2.connectedComponentsWithStats(pruned_skeleton, connectivity=8)
+    midpoints = []
+    bridge_boxes = []
     for label in range(1, num_labels):
         sk_mask = np.zeros_like(mask)
         sk_mask[labels == label] = 255
         sk_points = np.argwhere(sk_mask > 0).tolist()
         overlaps = is_component_in_bbox(sk_points, bboxes)
-        if len(overlaps) != 2:
-            pruned_skeleton[sk_mask > 0] = 0
-    # 6. Find the smallest rectangle & find the 2 middle points
-    midpoints = find_smallest_bbox(pruned_skeleton)
+        if len(overlaps) == 2:
+            midpoint, bridge_box = find_smallest_bbox(sk_mask)
+            midpoints.extend(midpoint)
+            bridge_boxes.append((bridge_box[0], overlaps))
+        # else:
+        #     vis[sk_mask > 0] = [0, 255, 0]
+        #     for (x1, y1, x2, y2, class_idx, bbox_id) in bboxes:
+        #         cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        # cv2.imwrite('vis.png', vis)
     # 7. use 2 middle points to create line & distinguish bridge
     mask[mask > 0] = 1
     for (mid_point1, mid_point2) in midpoints:
@@ -179,6 +190,19 @@ def cut_bridge(mask, bboxes):
         new_class = len(np.unique(mask))
         mask[left_mask > 0] = target_class
         mask[right_mask > 0] = new_class
-        cv2.line(vis, mid_point1, mid_point2, [0, 255, 0], 2)
-        cv2.imwrite('vis.png', vis)
-    return mask
+    return mask, bridge_boxes
+
+def get_max_thickness(component_mask):
+    """
+    计算 distance transform，并返回最大厚度值
+    """
+    # 确保 component_mask 是二值图像
+    binary_mask = (component_mask > 0).astype(np.uint8)
+
+    # 计算距离变换
+    dist_transform = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+
+    # 找到最大厚度值
+    max_thickness = np.max(dist_transform)
+
+    return max_thickness, dist_transform

@@ -19,6 +19,8 @@ import json
 from utility.utility import *
 from utility.post_process import *
 from utility.bridge import *
+from utility.color import *
+from utility.result import *
 
 def distinguish_duct_portal(mask,wsi_img, portal_num, area_dict):
     """
@@ -165,66 +167,113 @@ def removeedge(mask, area_threshold=30000):
     return clean_mask
 
 def process_component(component_label, labels,fibrosis_mask ,fibrosis_dilated, bboxes, wsi_img, area_dict):
-    colors = [(255, 0, 0), (0, 0, 255), (0, 255, 0)]
-
-    # 產生目前 Component 的 mask     
+    # 前置作業 產生 component mask
     component_mask = np.zeros_like(fibrosis_dilated)
     component_mask[labels == component_label] = 255 # 這是有 Dialated 的 mask
     component_points = np.argwhere(component_mask > 0).tolist()
     real_component_mask = np.zeros_like(fibrosis_dilated)
     real_component_mask = cv2.bitwise_and(fibrosis_mask, component_mask) # 這是一般的 mask
     area = cv2.countNonZero(real_component_mask)
-    # 面積太小 == 太破碎，直接 assign 成 zone2
+
+
+    # 面積太小 == 太破碎，直接 assign 成 zone2 
     if area < 200:
         with lock:
+            index = check_zone2_exist(area_dict)
+            if  index != -1:
+                area_dict['fibrosis'][index]['area'] += area
+            else:
+                res = get_fibrosis_template()
+                res['name'] = 'zone2'
+                res['category'] = 'zone2'
+                res['area'] = area
+                area_dict['fibrosis'].append(res)
+            # Visualize
             wsi_img[real_component_mask > 0] = [255, 0, 0] # 藍色
-            if area_dict.get('zone2') is None:
-                area_dict['zone2'] = 0
-            area_dict['zone2'] += area
         return
     
     # 確認是否有重疊血管或膽管
     overlap_bboxex = is_component_in_bbox(component_points, bboxes, class_filter={1, 2})
-    # overlap_duct_bboxes = is_component_in_bbox(component_points, bboxes, class_filter={0})
-
-    with lock:
-        # 如果 BBOX 重疊就不用特別作 bridging
-        # TODO: BBOX 距離太近的情況，要合併
-        overlap_bboxex = check_boxes(overlap_bboxex)
-        # 計算面積 & 視覺化纖維
-        if len(overlap_bboxex) == 1:
-            # 一個血管的情況
-            x1, y1, x2, y2, class_idx, bbox_id = overlap_bboxex[0]
-            wsi_img[real_component_mask > 0] = colors[class_idx] # Portal:紅色 Central:綠色
-            if area_dict.get(bbox_id) is None:
-                area_dict[bbox_id] = 0
-            area_dict[bbox_id] += area
-        elif len(overlap_bboxex) >= 2:
-            bridge_mask = cut_bridge(component_mask, overlap_bboxex)
+    overlap_bboxex = deal_boxes(overlap_bboxex)
+    
+    # 一個血管的情況
+    if len(overlap_bboxex) == 1:
+        x1, y1, x2, y2, class_idx, bbox_id = overlap_bboxex[0]
+        with lock:
+            # Visualize
+            wsi_img[real_component_mask > 0] = get_class_color(class_idx)
+            # Quantify
+            index = check_fibrosis_exist(area_dict, bbox_id)
+            if index  != -1:
+                area_dict['fibrosis'][index]['area'] += area
+            else:
+                res = get_fibrosis_template()
+                res['name'] = bbox_id
+                res['category'] = class_idx
+                res['area'] = area
+                area_dict['fibrosis'].append(res)
+    # 有兩個以上的血管        
+    elif len(overlap_bboxex) >= 2:
+        bridge_mask, bridge_boxes = cut_bridge(component_mask, overlap_bboxex)
+        with lock:
             for class_idx in np.unique(bridge_mask):
                 if class_idx == 0:
                     continue
-                wsi_img[(bridge_mask == class_idx) & (real_component_mask > 0)] = colors[(class_idx - 1)%3]
-
-        else:
-            # 判定 Bridging
-            if area >= 1000 and check_bridge_when_no_vein(component_mask):
+                vein_fibrosis_mask = (bridge_mask == class_idx).astype(np.uint8)
+                vein_fibrosis_points = np.argwhere(vein_fibrosis_mask > 0).tolist()
+                target_bbox = is_component_in_bbox(vein_fibrosis_points, overlap_bboxex, class_filter={1, 2})
+                # Quantify
+                res = get_fibrosis_template()
+                res['name'] = target_bbox[0][5]
+                res['category'] = target_bbox[0][4]
+                res['area'] = cv2.countNonZero(vein_fibrosis_mask)
+                res['has_bridge'] = True
+                area_dict['fibrosis'].append(res)
+                # Visualize
+                wsi_img[(bridge_mask == class_idx) & (real_component_mask > 0)] = get_randoom_color()
+            for bridge_box in bridge_boxes:
+                (bridge_box, length, thickness), [box1, box2] = bridge_box
+                # Quantify
+                bridge_res = get_bridge_template()
+                if box1[4] == 1 and box2[4] == 1:
+                    bridge_res['category'] = 'p-p bridge'
+                elif box1[4] == 2 and box2[4] == 2:
+                    bridge_res['category'] = 'c-c bridge'
+                else:
+                    bridge_res['category'] = 'p-c bridge'
+                bridge_res['thickness'] = thickness
+                bridge_res['length'] = length
+                bridge_res['vein1'] = box1[5] # bbox1_id
+                bridge_res['vein2'] = box2[5] # bbox2_id
+                area_dict['bridge'].append(bridge_res)
+    # 沒有血管的情況
+    else:
+        # 判定 Bridging
+        if area >= 1000 and check_bridge_when_no_vein(component_mask):
+            with lock:
+                max_thickness, _ = get_max_thickness(component_mask)
                 wsi_img[real_component_mask > 0] = [255, 255, 0] 
-                if area_dict.get('birdge') is None:
-                    area_dict['birdge'] = 0
-                if area_dict.get('birdge_num') is None:
-                    area_dict['birdge_num'] = 0
-                area_dict['birdge'] += area
-                area_dict['birdge_num'] += 1
-            else:
+                bridge_res = get_bridge_template()
+                bridge_res['category'] = 'no vein bridge'
+                bridge_res['area'] = area
+                bridge_res['thickness'] = int(max_thickness)
+                area_dict['bridge'].append(bridge_res)
+        else:
+            with lock:
                 wsi_img[real_component_mask > 0] = [255, 0, 0] # 藍色
-                if area_dict.get('zone2') is None:
-                    area_dict['zone2'] = 0
-                area_dict['zone2'] += area
+                index = check_zone2_exist(area_dict)
+                if index!=-1:
+                    area_dict['fibrosis'][index]['area'] += area
+                else:
+                    res = get_fibrosis_template()
+                    res['name'] = 'zone2'
+                    res['category'] = 'zone2'
+                    res['area'] = area
+                    area_dict['fibrosis'].append(res)
 
 def main_processing(labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, num_labels, area_dict):
     # 如果會 out of memory max_workers=往下降
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor() as executor:
         futures = [
             executor.submit(process_component, label, labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, area_dict)
             for label in range(1, num_labels)
@@ -239,7 +288,7 @@ if __name__ == "__main__":
     global wsi_level
     global tissue_skeleton
     global tissue_contour_mask
-    wsi_level = 4
+    wsi_level = 5
     if len(sys.argv) > 1:
         try:
             level = int(sys.argv[1])
@@ -297,7 +346,7 @@ if __name__ == "__main__":
 
             # 4. 開始分區
             lock = threading.Lock()
-            area_dict = {}
+            area_dict = get_result_template()
             final_image = main_processing(labels, fibrosis_mask, fibrosis_dilated, bboxes, wsi_img, num_labels, area_dict)
 
             # 5. 儲存結果

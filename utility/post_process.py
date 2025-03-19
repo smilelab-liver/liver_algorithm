@@ -116,7 +116,7 @@ def generate_bbox_uid(bboxes):
         res.append((x1, y1, x2, y2, class_idx, bbox_id))
     return res
 
-def is_component_in_bbox(component_points, bboxes, class_filter=None):
+def is_component_in_bbox(component_points, bboxes, class_filter=None, dialate=5):
     """
     檢查 component 的所有點是否在任意 bbox 範圍內
     @param component_points: list of [x, y]
@@ -131,7 +131,7 @@ def is_component_in_bbox(component_points, bboxes, class_filter=None):
     for idx, (x1, y1, x2, y2, class_idx, bbox_id) in enumerate(bboxes):
         if class_filter is not None and class_idx not in class_filter:
             continue
-        bbox_points_set = {(y, x) for y in range(y1-2, y2 + 2) for x in range(x1-2, x2 + 2)}
+        bbox_points_set = {(y, x) for y in range(y1-dialate, y2 + dialate) for x in range(x1-dialate, x2 + dialate)}
         if any(point in bbox_points_set for point in component_points):
             overlap_bbox.append(bboxes[idx])
     return overlap_bbox
@@ -193,7 +193,7 @@ def merge_boxes(box1, box2):
     class_idx = box1[4]  # 假設類別不變
     bbox_id = min(box1[5], box2[5])  # 保留較小的 id
     return (x1, y1, x2, y2, class_idx, bbox_id)
-def check_boxes(bboxes, merge_threshold=100):
+def deal_boxes(bboxes, merge_threshold=50):
     """
     檢查邊界框是否重疊或距離很近，重疊則保留較大框，距離小於 merge_threshold 則合併。
     bboxes: List of bounding boxes [(x1, y1, x2, y2, class_idx, bbox_id), ...]
